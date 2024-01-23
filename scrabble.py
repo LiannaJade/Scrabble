@@ -128,7 +128,7 @@ class Host(threading.Thread):
         self.players.sort(key=lambda n: n.tiles[0])
         for i in range(self.player_count):
             self.players[i].order = i
-            self.players[i].send("order: {0}, order_tile: {1}".format(i, self.players[i].tiles.pop(0)))  # change to actual command
+            self.players[i].send("order: {0}; order_tile: {1}".format(i, self.players[i].tiles.pop(0)))  # change to actual command
         # takes 7 tiles per player
         for player in self.players:
             player.tiles = self.tiles.take(7)
@@ -169,20 +169,21 @@ class PlayerHost:
 
 
 class PlayerClient:
-    def __init__(self, name):
+    def __init__(self, name, update=lambda: None):
         self.name = name
         self.order = None
         self.board = None
         self.tiles = None
         self.player_count = None
         self.player_turn = None
+        self.update = update
 
         self.host = None  # temp variable until implementation
 
     def receive(self, command):
         # update to actual code
         try:
-            commands = command.split(",")
+            commands = command.split(";")
             for command in commands:
                 opcode, operand = command.split(":")
                 if opcode == "order":
@@ -190,9 +191,11 @@ class PlayerClient:
                 elif opcode == "order_tile":
                     print(operand)
                 elif opcode == "tiles":
-                    self.tiles = operand
+                    print(operand)
+                    self.tiles = operand.replace("'", "").replace("[", "").replace("]", "").split(", ")
         except:
             pass
+        self.update()
         print(self.name, command)
 
     def send(self, string):

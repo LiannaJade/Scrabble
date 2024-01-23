@@ -144,6 +144,7 @@ class GameCanvas(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
+        self.player = None
         self.canvas = tk.Canvas(self, width=640, height=360)
         self.canvas.pack()
         # key binds
@@ -155,22 +156,33 @@ class GameCanvas(ttk.Frame):
         self.canvas.create_image(320, 360, anchor="s", image=self.controller.assets["rack"], tag="rack")
         bbox = self.canvas.bbox("rack")
         for i in range(7):
+            j = self.canvas.create_text(bbox[0]+10+i*20, bbox[1], anchor="nw",
+                                        text=" ", tags=["tile_text", (i, "R"), "unassigned"])
             self.canvas.create_image(bbox[0]+5+i*20, bbox[1], anchor="nw",
-                                     image=self.controller.assets["tile"], tags=["tile", (i, "R")])
-
-        print("wee woo")
+                                     image=self.controller.assets["tile"], tags=["tile", (i, "R"), "text_"+str(j)])
+            self.canvas.tag_raise(j)
 
     def on_switch(self):
         if not self.controller.app_config["full screen"]:
             self.controller.geometry("640x360")
-        player = scrabble.PlayerClient("player1")
+        player = scrabble.PlayerClient("player1", update=self.on_update)
         host = scrabble.Host(player)
         # temp code
         player2 = scrabble.PlayerClient("player2")
         host.add_player(player2)
         player.host = host
         player2.host = host
+        self.player = player
         host.start_game()
+
+    def on_update(self):
+        if self.player.tiles is not None:
+            tiles = self.canvas.find_withtag("tile_text")
+            for i, j in zip(tiles, range(7)):
+                if "unassigned" in self.canvas.gettags(i):
+                    self.canvas.itemconfigure(i, text=self.player.tiles[j])
+                    self.canvas.addtag_withtag(self.player.tiles[j], i)
+                    self.canvas.dtag("unassigned", i)
 
     def find_anchor(self, x, y):
         """checks if (x, y) is within the range of an anchor
@@ -201,8 +213,13 @@ class GameCanvas(ttk.Frame):
 
     def on_left_click(self, event):
         # if there is a tile where clicked, then give tile move tag
-        if "tile" in self.canvas.gettags("current"):
-            self.canvas.addtag_withtag("move", "current")
+        for i in self.canvas.find_overlapping(event.x, event.y, event.x, event.y):
+            if "tile" in self.canvas.gettags(i):
+                self.canvas.addtag_withtag("move", i)
+                for tag in self.canvas.gettags(i):
+                    if tag[:5] == "text_":
+                        self.canvas.addtag_withtag("move", int(tag[5:]))
+        self.canvas.tag_raise("move")
 
     def on_left_release(self, event):
         bbox = self.canvas.bbox("move")
@@ -215,11 +232,11 @@ class GameCanvas(ttk.Frame):
             if len(self.canvas.find_withtag(anchor)) == 0 and anchor != (None, None):
                 self.canvas.addtag_withtag(anchor, "move")
                 for tag in self.canvas.gettags("move"):
-                    if tag not in ["current", "move", "tile", str(anchor[0]) + " " + str(anchor[1])]:
+                    if tag not in ["current", "move", "tile", str(anchor[0]) + " " + str(anchor[1])] and tag[:5] != "text_":
                         self.canvas.dtag(anchor, tag)
             anchor = self.canvas.gettags("move")
             for i in anchor:
-                if i not in ["tile", "move", "current"]:
+                if i not in ["tile", "move", "current"] and i[:5] != "text_":
                     anchor = i.split(" ")
                     anchor = int(anchor[0]), int(anchor[1]) if anchor[1].isnumeric() else anchor[1]
             # now that the anchor to move the tile to is found, is then move
