@@ -169,7 +169,7 @@ class PlayerHost:
 
 
 class PlayerClient:
-    def __init__(self, name, update=lambda: None):
+    def __init__(self, name, update=lambda types: None):
         self.name = name
         self.order = None
         self.board = None
@@ -182,20 +182,24 @@ class PlayerClient:
 
     def receive(self, command):
         # update to actual code
+        updated = []
         try:
             commands = command.split(";")
             for command in commands:
                 opcode, operand = command.split(":")
                 if opcode == "order":
                     self.order = int(operand)
+                    updated.append("order")
                 elif opcode == "order_tile":
+                    updated.append("order_tile")
                     print(operand)
                 elif opcode == "tiles":
+                    updated.append("tiles")
                     print(operand)
                     self.tiles = operand.replace("'", "").replace("[", "").replace("]", "").split(", ")
         except:
             pass
-        self.update()
+        self.update(updated)
         print(self.name, command)
 
     def send(self, string):
