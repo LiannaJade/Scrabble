@@ -95,6 +95,7 @@ class Host(threading.Thread):
         self.add_player(host_player)
         self.player_count = None
         self.board = [[" " for j in range(15)] for i in range(15)]
+        self.current_player = 0
         # gets tiles
         self.tiles = TilePool(lang)
         # gets words (possibly change to a GADDAG or DAWG)
@@ -132,7 +133,7 @@ class Host(threading.Thread):
         # takes 7 tiles per player
         for player in self.players:
             player.tiles = self.tiles.take(7)
-            player.send("tiles: {0}".format(player.tiles))  # change to actual command
+            player.send("tiles: {0}".format("".join(player.tiles)))  # change to actual command
         # start game loop
         self.start()
 
@@ -148,8 +149,132 @@ class Host(threading.Thread):
             waiting = True
             while waiting:
                 if len(self.inputs) > 0:
-                    print("woooooo working {0}".format(self.inputs.pop(0)))
+                    command = self.inputs.pop(0)
+                    sender, command = command
+                    if command[:5] == "done ":
+                        # splits incoming command
+                        board, rack = command[5:].split("/")
+                        board = list(board)
+                        board = [board[i*15:i*15+15] for i in range(15)]
+                        rack = list(rack)
+
+                        if self.is_valid_move(board):
+                            score = self.calculate_score(board)
+                            sender.score += score
+                            sender.tiles = list(rack)
+                            sender.tiles += self.tiles.take(7 - len(sender.tiles))
+                            print(sender.tiles, rack)
+                            sender.send("tiles: {0}".format("".join(sender.tiles)))
+                            self.current_player = (self.current_player + 1) % self.player_count
+                            self.board = board
+                            for player in self.players:
+                                player.send("board: {0}".format("".join(["".join(i) for i in self.board])))
+
+                    print("completed {0}".format(command))
                 time.sleep(1)
+
+    @staticmethod
+    def find_words(board):
+        words, roots = [], []
+        for x in range(15):
+            word, root = "", None
+            for y in range(15):
+                # scans over each letter of a row
+                if board[x][y] == " ":
+                    # if current space is blank add word if valid
+                    if len(word) >= 2:
+                        words.append(word)
+                        roots.append(root)
+                    word, root = "", None
+                else:
+                    if root is None:
+                        root = (x, y, True)
+                    word += board[x][y]
+            if len(word) >= 2:
+                words.append(word)
+                roots.append(root)
+        for y in range(15):
+            word, root = "", None
+            for x in range(15):
+                # scans over each letter of a row
+                if board[x][y] == " ":
+                    # if current space is blank add word if valid
+                    if len(word) >= 2:
+                        words.append(word)
+                        roots.append(root)
+                    word, root = "", None
+                else:
+                    if root is None:
+                        root = (x, y, False)
+                    word += board[x][y]
+            if len(word) >= 2:
+                words.append(word)
+                roots.append(root)
+
+        return words, roots
+
+    def is_valid_move(self, board):
+        # gets the difference between the two boards
+        diff = [[" " for x in range(15)] for y in range(15)]
+        new_letters_at = []
+        for x in range(15):
+            for y in range(15):
+                if self.board[x][y] != board[x][y]:
+                    diff[x][y] = board[x][y]
+                    new_letters_at.append((x, y))
+        # validity check
+        xs, ys = list(set([i[0] for i in new_letters_at])), list(set([i[1] for i in new_letters_at]))
+        xs.sort()
+        ys.sort()
+        if len(xs) != 1 and len(ys) != 1:
+            # if all new tiles don't fall on to the same line then false
+            return False
+        # checks that new tiles are consecutive
+        elif len(xs) == 1:
+            counter = ys[0] + 1
+            while counter < ys[-1]:
+                if counter in ys or board[xs[0]][counter] != " ":
+                    counter += 1
+                else:
+                    return False
+        elif len(ys) == 1:
+            counter = xs[0] + 1
+            while counter < xs[-1]:
+                if counter in xs or board[ys[0]][counter] != " ":
+                    counter += 1
+                else:
+                    return False
+        # if there is a tile on the center tile then legal always
+        if (7, 7) in new_letters_at:
+            if len(new_letters_at) > 1:
+                return True
+        # checks new tiles touch at least one old tile
+        for tile in new_letters_at:
+            if tile[0] > 0 and self.board[tile[0] - 1][tile[1]] != " ":
+                return True
+            if tile[0] < 14 and self.board[tile[0] + 1][tile[1]] != " ":
+                return True
+            if tile[1] > 0 and self.board[tile[0]][tile[1] - 1] != " ":
+                return True
+            if tile[1] < 14 and self.board[tile[0]][tile[1] + 1] != " ":
+                return True
+        return False
+
+    def calculate_score(self, board):
+        words, roots = self.find_words(board)
+        old_words, old_roots = self.find_words(self.board)
+        new_words, new_roots = [], []
+        for word, root in zip(words, roots):
+            if word not in old_words:
+                new_words.append(word)
+                new_roots.append(root)
+            else:
+                index = old_words.index(word)
+                if old_roots[index] != root:
+                    new_words.append(word)
+                    new_roots.append(root)
+        # add scoring
+        return 0
 
 
 class PlayerHost:
@@ -159,13 +284,15 @@ class PlayerHost:
         self.host = host
         self.tiles = []
         self.order = None
+        self.score = 0
 
     def send(self, command):
         # update to actual code
         self.player.receive(command)
 
     def receive(self, string):
-        self.host.inputs.append(string)
+        self.host.inputs.append([self, string])
+        print("server received: {0}".format(string))
 
 
 class PlayerClient:
@@ -186,7 +313,7 @@ class PlayerClient:
         try:
             commands = command.split(";")
             for command in commands:
-                opcode, operand = command.split(":")
+                opcode, operand = command.split(": ")
                 if opcode == "order":
                     self.order = int(operand)
                     updated.append("order")
@@ -196,11 +323,10 @@ class PlayerClient:
                 elif opcode == "tiles":
                     updated.append("tiles")
                     print(operand)
-                    self.tiles = operand.replace("'", "").replace("[", "").replace("]", "").split(", ")
+                    self.tiles = list(operand)
         except:
             pass
         self.update(updated)
-        print(self.name, command)
 
     def send(self, string):
         # update to actual code

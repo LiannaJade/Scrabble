@@ -154,7 +154,7 @@ class GameCanvas(ttk.Frame):
         # creates frame images
         self.canvas.create_image(320, 0, anchor="n", image=self.controller.assets["board"], tag="board")
         self.canvas.create_image(320, 360, anchor="s", image=self.controller.assets["rack"], tag="rack")
-        self.canvas.create_text(20, 50, text="button", tags=["button", "test"])
+        self.canvas.create_text(20, 50, text="End Turn", tags=["button", "end_turn"])
 
     def set_tiles(self, tiles):
         not_played_tiles = self.canvas.find_withtag("not played")
@@ -224,7 +224,6 @@ class GameCanvas(ttk.Frame):
                 board[loc[1]][loc[0]] = tile[1]
             else:
                 rack.append(tile[1])
-        print(board)
         return board, rack
 
     def on_switch(self):
@@ -232,11 +231,11 @@ class GameCanvas(ttk.Frame):
             self.controller.geometry("640x360")
         player = scrabble.PlayerClient("player1", update=self.on_update)
         host = scrabble.Host(player)
+        player.host = host.players[-1]
         # temp code
         player2 = scrabble.PlayerClient("player2")
         host.add_player(player2)
-        player.host = host
-        player2.host = host
+        player2.host = host.players[-1]
         self.player = player
         host.start_game()
 
@@ -254,10 +253,8 @@ class GameCanvas(ttk.Frame):
                     if tag[:5] == "text_":
                         self.canvas.addtag_withtag("move", int(tag[5:]))
             elif "button" in self.canvas.gettags(i):
-                if "test" in self.canvas.gettags(i):
-                    self.get_board()
-                print()
-
+                if "end_turn" in self.canvas.gettags(i):
+                    self.complete_turn()
         self.canvas.tag_raise("move")
 
     def on_left_release(self, event):
@@ -300,6 +297,12 @@ class GameCanvas(ttk.Frame):
         elif y > 340:
             y = 340
         self.canvas.moveto("move", x, y)
+
+    def complete_turn(self):
+        board, rack = self.get_board()
+        board = "".join(["".join(i) for i in board])  # converts board into a string of all the letters
+        rack = "".join(rack)
+        self.player.send("done {0}/{1}".format(board, rack))
 
 
 if __name__ == "__main__":
