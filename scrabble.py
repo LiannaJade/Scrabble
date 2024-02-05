@@ -4,6 +4,7 @@ import os
 import threading
 import time
 
+
 # TODO
 # game setup
 # player handling
@@ -14,6 +15,7 @@ import time
 class DAWG:
     """the basic idea of a DAWG, made to be more "python-friendly"
     the saved structure is still stored as an automata"""
+
     def __init__(self, strings):
         strings.sort()
         self.nodes = [{}]
@@ -23,7 +25,7 @@ class DAWG:
                 if char in self.nodes[current_node].keys():
                     current_node = self.nodes[current_node][char][0]
                 else:
-                    self.nodes[current_node][char] = (len(self.nodes), index == len(string)-1)
+                    self.nodes[current_node][char] = (len(self.nodes), index == len(string) - 1)
                     current_node = len(self.nodes)
                     self.nodes.append({})
 
@@ -56,7 +58,7 @@ class TilePool:
         # takes tiles from tile pool ///(what if count > tile pool size)
         rtn = []
         for i in range(count):
-            num = random.randint(0, len(self.tiles)-1)
+            num = random.randint(0, len(self.tiles) - 1)
             rtn.append(self.tiles.pop(num))
         return rtn
 
@@ -64,7 +66,7 @@ class TilePool:
         # returns a list of random tiles from the pool without taking them
         rtn = set()
         while len(rtn) < count:
-            rtn.add(random.randint(0, len(self.tiles)-1))
+            rtn.add(random.randint(0, len(self.tiles) - 1))
         rtn = list(rtn)
         for i in range(len(rtn)):
             rtn[i] = self.tiles[rtn[i]]
@@ -100,8 +102,8 @@ class Host(threading.Thread):
         self.tiles = TilePool(lang)
         # gets words (possibly change to a GADDAG or DAWG)
         self.words = []
-        if os.path.exists("Dictionaries/"+lang+".txt"):
-            file = open("Dictionaries/"+lang+".txt", "r")
+        if os.path.exists("Dictionaries/" + lang + ".txt"):
+            file = open("Dictionaries/" + lang + ".txt", "r")
             self.words = file.readlines()
             file.close()
         for i in range(len(self.words)):
@@ -129,7 +131,9 @@ class Host(threading.Thread):
         self.players.sort(key=lambda n: n.tiles[0])
         for i in range(self.player_count):
             self.players[i].order = i
-            self.players[i].send("order: {0}; order_tile: {1}".format(i, self.players[i].tiles.pop(0)))  # change to actual command
+            self.players[i].send(
+                "order: {0}; order_tile: {1}; player_count: {2}".format(i, self.players[i].tiles.pop(0),
+                                                                        self.player_count))
         # takes 7 tiles per player
         for player in self.players:
             player.tiles = self.tiles.take(7)
@@ -141,37 +145,34 @@ class Host(threading.Thread):
         self.game_loop()
 
     def game_loop(self):
-        for player_index in range(self.player_count):
-            # tells all players the current player
-            for player in self.players:
-                player.send("current_player: {0}".format(player_index))
-            # waiting for response from player
-            waiting = True
-            while waiting:
-                if len(self.inputs) > 0:
-                    command = self.inputs.pop(0)
-                    sender, command = command
-                    if command[:5] == "done ":
-                        # splits incoming command
-                        board, rack = command[5:].split("/")
-                        board = list(board)
-                        board = [board[i*15:i*15+15] for i in range(15)]
-                        rack = list(rack)
+        # waiting for response from player
+        playing = True
+        while playing:
+            if len(self.inputs) > 0:
+                command = self.inputs.pop(0)
+                sender, command = command
+                if command[:7] == "place: ":
+                    # splits incoming command
+                    board, rack = command[7:].split("/")
+                    board = list(board)
+                    board = [board[i * 15:i * 15 + 15] for i in range(15)]
+                    rack = list(rack)
+                    # plays turn if valid
+                    if self.is_valid_move(board):
+                        sender.score += self.calculate_score(board)
+                        sender.tiles = list(rack) + self.tiles.take(7 - len(rack))
+                        sender.send("tiles: {0}".format("".join(sender.tiles)))
+                        self.current_player = (self.current_player + 1) % self.player_count
+                        self.board = board
+                        for player in self.players:
+                            player.send("board: {0}".format("".join(["".join(i) for i in self.board])))
+                            player.send("score: {0}/{1}".format(sender.order, sender.score))
+                            player.send("current_player: {0}".format(self.current_player))
+                    else:
+                        sender.send("error1: oh no")
 
-                        if self.is_valid_move(board):
-                            score = self.calculate_score(board)
-                            sender.score += score
-                            sender.tiles = list(rack)
-                            sender.tiles += self.tiles.take(7 - len(sender.tiles))
-                            print(sender.tiles, rack)
-                            sender.send("tiles: {0}".format("".join(sender.tiles)))
-                            self.current_player = (self.current_player + 1) % self.player_count
-                            self.board = board
-                            for player in self.players:
-                                player.send("board: {0}".format("".join(["".join(i) for i in self.board])))
-
-                    print("completed {0}".format(command))
-                time.sleep(1)
+                print("completed {0}".format(command))
+            time.sleep(1)
 
     @staticmethod
     def find_words(board):
@@ -261,6 +262,7 @@ class Host(threading.Thread):
         return False
 
     def calculate_score(self, board):
+        # needs finishing
         words, roots = self.find_words(board)
         old_words, old_roots = self.find_words(self.board)
         new_words, new_roots = [], []
@@ -274,7 +276,7 @@ class Host(threading.Thread):
                     new_words.append(word)
                     new_roots.append(root)
         # add scoring
-        return 0
+        return 1
 
 
 class PlayerHost:
@@ -302,31 +304,43 @@ class PlayerClient:
         self.board = None
         self.tiles = None
         self.player_count = None
-        self.player_turn = None
+        self.current_player = 0
         self.update = update
+        self.scores = [0] * 4
 
         self.host = None  # temp variable until implementation
 
     def receive(self, command):
         # update to actual code
         updated = []
+        print(command)
         try:
-            commands = command.split(";")
+            commands = command.split("; ")
             for command in commands:
                 opcode, operand = command.split(": ")
                 if opcode == "order":
                     self.order = int(operand)
-                    updated.append("order")
                 elif opcode == "order_tile":
-                    updated.append("order_tile")
-                    print(operand)
+                    pass
                 elif opcode == "tiles":
-                    updated.append("tiles")
-                    print(operand)
                     self.tiles = list(operand)
+                elif opcode == "score":
+                    player, score = operand.split("/")
+                    player, score = int(player), int(score)
+                    self.scores[player] = score
+                    print("scores now {0}".format(self.scores))
+                elif opcode == "board":
+                    self.board = [[operand[j * 15 + i] for i in range(15)] for j in range(15)]
+                    updated.append("board")
+                elif opcode == "player_count":
+                    self.player_count = int(operand)
+                elif opcode == "current_player":
+                    self.current_player = int(operand)
+                updated.append(opcode)
         except:
-            pass
-        self.update(updated)
+            raise
+        if self.update is not None:
+            self.update(updated)
 
     def send(self, string):
         # update to actual code

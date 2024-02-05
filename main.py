@@ -52,8 +52,8 @@ class App(tk.Tk):
             self.geometry("{0}x{1}+0+0".format(self.winfo_screenwidth(), self.winfo_screenheight()))
         else:
             self.overrideredirect(False)
-            self.geometry("360x420+{0}+{1}".format(int(self.winfo_screenwidth()/2-180),
-                                                   int(self.winfo_screenheight()/2-210)))
+            self.geometry("360x420+{0}+{1}".format(int(self.winfo_screenwidth() / 2 - 180),
+                                                   int(self.winfo_screenheight() / 2 - 210)))
         print("set full screen to {0}".format(state))
 
     @staticmethod
@@ -154,24 +154,82 @@ class GameCanvas(ttk.Frame):
         # creates frame images
         self.canvas.create_image(320, 0, anchor="n", image=self.controller.assets["board"], tag="board")
         self.canvas.create_image(320, 360, anchor="s", image=self.controller.assets["rack"], tag="rack")
-        self.canvas.create_text(20, 50, text="End Turn", tags=["button", "end_turn"])
+        self.canvas.create_text(20, 300, anchor="w", text="End Turn", tags=["button", "end_turn"])
+        self.canvas.create_text(170, 320, anchor="w", tag="error_line", font=("Helvetica", 20, "bold"))
 
     def set_tiles(self, tiles):
-        not_played_tiles = self.canvas.find_withtag("not played")
-        for i in not_played_tiles:
-            tags = self.canvas.gettags(i)
-            for tag in tags:
-                if tag[:5] == "text_":
-                    self.canvas.dtag(int(tag[5:]))
-            self.canvas.dtag(i)
-
+        # removes tiles currently in the rack
+        tile_textures = self.canvas.find_withtag("tile")
+        for tile in tile_textures:
+            tags = list(self.canvas.gettags(tile))
+            tags.remove("tile")
+            loc = list(filter(lambda x: False if x[:5] == "text_" else True, tags))[0]
+            if loc[-1] == "R":
+                text = int(list(filter(lambda x: True if x[:5] == "text_" else False, tags))[0][5:])
+                self.canvas.delete(text)
+                self.canvas.delete(tile)
+        # replaces all rack tiles
         bbox = self.canvas.bbox("rack")
         for i, k in zip(range(7), tiles):
-            j = self.canvas.create_text(bbox[0]+10+i*20, bbox[1], anchor="nw",
-                                        text=k, tags=["tile_text", (i, "R"), "not played"])
-            self.canvas.create_image(bbox[0]+5+i*20, bbox[1], anchor="nw",
-                                     image=self.controller.assets["tile"], tags=["tile", (i, "R"), "text_"+str(j)])
+            j = self.canvas.create_text(bbox[0] + 15 + i * 20, bbox[1] + 8, anchor="c", fill="red",
+                                        text=k, tags=["tile_text", (i, "R")], font=("Courier", 10))
+            self.canvas.create_image(bbox[0] + 5 + i * 20, bbox[1], anchor="nw",
+                                     image=self.controller.assets["tile"], tags=["tile", (i, "R"), "text_" + str(j)])
             self.canvas.tag_raise(j)
+
+    def set_board(self):
+        # removes all current board tiles
+        tile_textures = self.canvas.find_withtag("tile")
+        for tile in tile_textures:
+            tags = list(self.canvas.gettags(tile))
+            tags.remove("tile")
+            loc = list(filter(lambda x: False if x[:5] == "text_" else True, tags))[0]
+            if loc[-1] != "R":
+                text = int(list(filter(lambda x: True if x[:5] == "text_" else False, tags))[0][5:])
+                self.canvas.delete(text)
+                self.canvas.delete(tile)
+
+        # replaces all board tiles
+        bbox = self.canvas.bbox("board")
+        for x in range(15):
+            for y in range(15):
+                if self.player.board[y][x] != " ":
+                    x1 = bbox[0] + x * (bbox[2] - bbox[0]) / 15
+                    y1 = bbox[1] + y * (bbox[3] - bbox[1]) / 15
+                    num = self.canvas.create_text(x1 + 10, y1 + 8, anchor="c", font=("Courier", 10),
+                                                  text=self.player.board[y][x], tags=["tile_text", (x, y)])
+                    self.canvas.create_image(x1, y1, anchor="nw",
+                                             image=self.controller.assets["tile"],
+                                             tags=["tile", (x, y), "text_" + str(num), "played"])
+                    self.canvas.tag_raise(num)
+
+    def set_error_line(self, error=" "):
+        error_line = self.canvas.find_withtag("error_line")
+        for i in error_line:
+            self.canvas.itemconfigure(i, text=error)
+
+    def create_player_list(self):
+        for i in range(self.player.player_count):
+            if i == self.player.order:
+                name = "you {0}".format(self.player.scores[i])
+            else:
+                name = "player{0} {1}".format(i, self.player.scores[i])
+            if i == self.player.current_player:
+                name = "- " + name
+            self.canvas.create_text(20, 240+i*15, anchor="w", text=name, tags=["player_list", i],
+                                    font=("Helvetica", 10))
+
+    def update_player_list(self):
+        player_list = self.canvas.find_withtag("player_list")
+        for player in player_list:
+            num = int(list(filter(lambda x: x.isnumeric(), self.canvas.gettags(player)))[0])
+            if num == self.player.order:
+                name = "you {0}".format(self.player.scores[num])
+            else:
+                name = "player{0} {1}".format(num, self.player.scores[num])
+            if num == self.player.current_player:
+                name = "- " + name
+            self.canvas.itemconfigure(player, text=name)
 
     def find_anchor(self, x, y):
         """checks if (x, y) is within the range of an anchor
@@ -180,7 +238,7 @@ class GameCanvas(ttk.Frame):
             # check game board
             if "board" in self.canvas.gettags(image):
                 bbox = self.canvas.bbox("board")
-                x, y = int((x-bbox[0])/(bbox[2]-bbox[0])*15), int((y-bbox[1])/(bbox[3]-bbox[1])*15)
+                x, y = int((x - bbox[0]) / (bbox[2] - bbox[0]) * 15), int((y - bbox[1]) / (bbox[3] - bbox[1]) * 15)
                 if x == 15:
                     x = 14
                 if y == 15:
@@ -190,7 +248,7 @@ class GameCanvas(ttk.Frame):
             # check rack
             elif "rack" in self.canvas.gettags(image):
                 bbox = self.canvas.bbox("rack")
-                x, y = (x-bbox[0]-5)/(bbox[2]-bbox[0]-10)*7, "R"
+                x, y = (x - bbox[0] - 5) / (bbox[2] - bbox[0] - 10) * 7, "R"
                 if x < 0:
                     x = 0
                 elif x >= 7:
@@ -213,7 +271,7 @@ class GameCanvas(ttk.Frame):
         board = [[" " for j in range(15)] for i in range(15)]
         rack = []
         for tile in tiles:
-            # coverts the tile location into ints
+            # converts the tile location to ints
             loc = tile[0].split(" ")
             if loc[1] == "R":
                 loc[0] = int(loc[0])
@@ -240,14 +298,27 @@ class GameCanvas(ttk.Frame):
         host.start_game()
 
     def on_update(self, types):
+        print(types)
         if "tiles" in types:
             if self.player.tiles is not None:
                 self.set_tiles(self.player.tiles)
+        if "board" in types:
+            if self.player.board is not None:
+                self.set_board()
+        for i in ["current_player", "score"]:
+            if i in types:
+                self.update_player_list()
+                self.set_error_line()
+                break
+        if "player_count" in types:
+            self.create_player_list()
+        if "error1" in types:
+            self.set_error_line(error="Invalid Tile Placement")
 
     def on_left_click(self, event):
         # if there is a tile where clicked, then give tile move tag
         for i in self.canvas.find_overlapping(event.x, event.y, event.x, event.y):
-            if "tile" in self.canvas.gettags(i):
+            if "tile" in self.canvas.gettags(i) and "played" not in self.canvas.gettags(i):
                 self.canvas.addtag_withtag("move", i)
                 for tag in self.canvas.gettags(i):
                     if tag[:5] == "text_":
@@ -262,13 +333,14 @@ class GameCanvas(ttk.Frame):
         # if bbox is not none than there is a tile currently being moved
         if bbox is not None:
             # finds the nearest anchor point
-            x, y = (bbox[0] + bbox[2])/2, (bbox[1]+bbox[3])/2
+            x, y = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
             anchor = self.find_anchor(x, y)
             # if the anchor point is empty, tile assign that place, removes all tags that aren't "tile"
             if len(self.canvas.find_withtag(anchor)) == 0 and anchor != (None, None):
                 self.canvas.addtag_withtag(anchor, "move")
                 for tag in self.canvas.gettags("move"):
-                    if tag not in ["current", "move", "tile", str(anchor[0]) + " " + str(anchor[1])] and tag[:5] != "text_":
+                    if tag not in ["current", "move", "tile", str(anchor[0]) + " " + str(anchor[1])] and tag[
+                                                                                                         :5] != "text_":
                         self.canvas.dtag(anchor, tag)
             anchor = self.canvas.gettags("move")
             for i in anchor:
@@ -281,8 +353,8 @@ class GameCanvas(ttk.Frame):
                 x, y = bbox[0] + 5 + anchor[0] * 20, bbox[1]
             else:
                 bbox = self.canvas.bbox("board")
-                x = bbox[0] + anchor[0]*(bbox[2] - bbox[0])/15
-                y = bbox[1] + anchor[1]*(bbox[3] - bbox[1])/15
+                x = bbox[0] + anchor[0] * (bbox[2] - bbox[0]) / 15
+                y = bbox[1] + anchor[1] * (bbox[3] - bbox[1]) / 15
             self.canvas.moveto("move", x, y)
             self.canvas.dtag("move", "move")
 
@@ -302,7 +374,7 @@ class GameCanvas(ttk.Frame):
         board, rack = self.get_board()
         board = "".join(["".join(i) for i in board])  # converts board into a string of all the letters
         rack = "".join(rack)
-        self.player.send("done {0}/{1}".format(board, rack))
+        self.player.send("place: {0}/{1}".format(board, rack))
 
 
 if __name__ == "__main__":
