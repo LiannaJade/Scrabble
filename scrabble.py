@@ -5,13 +5,6 @@ import threading
 import time
 
 
-# TODO
-# game setup
-# player handling
-# game loop
-# game ending
-
-
 class DAWG:
     """the basic idea of a DAWG, made to be more "python-friendly"
     the saved structure is still stored as an automata"""
@@ -39,6 +32,30 @@ class DAWG:
                     current_node = self.nodes[current_node][char][0]
             else:
                 return False
+
+    def find(self, string, node=0):
+        string = string.upper()
+        if len(string) == 1:
+            if string == "*":
+                return [i.lower() for i in filter(lambda x: self.nodes[node][x][1], self.nodes[node].keys())]
+            elif string in self.nodes[node].keys() and self.nodes[node][string][1]:
+                return [string]
+            else:
+                return []
+        else:
+            if string[0] == "*":
+                letters = [chr(i) for i in range(ord("A"), ord("Z")+1)]  # modify this for use with other languages
+            else:
+                letters = [string[0]]
+            rtn = []
+            for letter in letters:
+                if letter in self.nodes[node].keys():
+                    if string[0] == "*":
+                        rtn += [letter.lower() + i for i in self.find(string[1:], node=self.nodes[node][letter][0])]
+                    else:
+                        rtn += [letter + i for i in self.find(string[1:], node=self.nodes[node][letter][0])]
+
+            return rtn
 
 
 class TilePool:
@@ -80,8 +97,12 @@ class TilePool:
         tiles = self.take(count)
         return tiles
 
-    def get_value(self, tile):
-        return self.values[tile]
+    def get_value(self, word):
+        value = 0
+        for letter in word:
+            if letter in self.values.keys():
+                value += self.values[letter]
+        return value
 
     @property
     def count(self):
@@ -98,6 +119,18 @@ class Host(threading.Thread):
         self.player_count = None
         self.board = [[" " for j in range(15)] for i in range(15)]
         self.current_player = 0
+        self.bonus_tiles = {"DW": [(1, 1), (2, 2), (3, 3), (4, 4),
+                                   (13, 1), (12, 2), (11, 3), (10, 4),
+                                   (1, 13), (2, 12), (3, 11), (4, 10),
+                                   (13, 13), (12, 12), (11, 11), (10, 10)],
+                            "DL": [(0, 3), (0, 11), (2, 6), (2, 8), (3, 0), (3, 7), (3, 14),
+                                   (6, 2), (6, 6), (6, 8), (6, 12), (7, 3), (7, 11),
+                                   (8, 2), (8, 6), (8, 8), (8, 12),
+                                   (11, 0), (11, 7), (11, 14), (12, 6), (12, 8), (14, 3), (14, 11)],
+                            "TW": [(0, 0), (7, 0), (14, 0), (14, 7),
+                                   (14, 14), (7, 14), (0, 14), (0, 7)],
+                            "TL": [(1, 5), (1, 9), (5, 1), (5, 5), (5, 9), (5, 13),
+                                   (9, 1), (9, 5), (9, 9), (9, 13), (13, 5), (13, 9)]}
         # gets tiles
         self.tiles = TilePool(lang)
         # gets words (possibly change to a GADDAG or DAWG)
@@ -108,6 +141,7 @@ class Host(threading.Thread):
             file.close()
         for i in range(len(self.words)):
             self.words[i] = self.words[i].replace("\n", "")
+        self.words = DAWG(self.words)
 
     def add_player(self, player):
         # add a player to the game
@@ -157,13 +191,18 @@ class Host(threading.Thread):
                     board = list(board)
                     board = [board[i * 15:i * 15 + 15] for i in range(15)]
                     rack = list(rack)
+
                     # plays turn if valid
                     if self.is_valid_move(board):
-                        sender.score += self.calculate_score(board)
+                        illegal_words = self.find_illegal_words(board)
+                        if len(illegal_words) != 0:
+                            sender.send("error1: illegal word")
+                            continue
+                        sender.score += self.calculate_score(board, rack)
                         sender.tiles = list(rack) + self.tiles.take(7 - len(rack))
                         sender.send("tiles: {0}".format("".join(sender.tiles)))
                         self.current_player = (self.current_player + 1) % self.player_count
-                        self.board = board
+                        self.set_board(board)
                         for player in self.players:
                             player.send("board: {0}".format("".join(["".join(i) for i in self.board])))
                             player.send("score: {0}/{1}".format(sender.order, sender.score))
@@ -239,9 +278,10 @@ class Host(threading.Thread):
                 else:
                     return False
         elif len(ys) == 1:
+            print(xs, ys)
             counter = xs[0] + 1
             while counter < xs[-1]:
-                if counter in xs or board[ys[0]][counter] != " ":
+                if counter in xs or board[counter][ys[0]] != " ":
                     counter += 1
                 else:
                     return False
@@ -261,7 +301,7 @@ class Host(threading.Thread):
                 return True
         return False
 
-    def calculate_score(self, board):
+    def calculate_score(self, board, rack):
         # needs finishing
         words, roots = self.find_words(board)
         old_words, old_roots = self.find_words(self.board)
@@ -275,8 +315,62 @@ class Host(threading.Thread):
                 if old_roots[index] != root:
                     new_words.append(word)
                     new_roots.append(root)
-        # add scoring
-        return 1
+        print(new_words, new_roots)
+        value = 0
+        # gets the score of each word modified
+        for word, root in zip(new_words, new_roots):
+            # finds the word multiplier
+            multiplier = 1
+            bonus_letters = ""
+            for i in range(len(word)):
+                # find the current tile
+                if root[2]:
+                    tile = (root[0], root[1] + i)
+                else:
+                    tile = (root[0] + i, root[1])
+                # applies any bonuses the tile may have
+                if self.board[tile[1]][tile[0]] == " ":
+                    if tile in self.bonus_tiles["DW"]:
+                        multiplier *= 2
+                    elif tile in self.bonus_tiles["TW"]:
+                        multiplier *= 3
+                    elif tile in self.bonus_tiles["DL"]:
+                        bonus_letters += word[i]
+                    elif tile in self.bonus_tiles["TL"]:
+                        bonus_letters += word[i] * 2
+            value += self.tiles.get_value(word + bonus_letters) * multiplier
+            # 50 point bonus for using all available tiles
+            if len(rack) == 0:
+                value += 50
+        return value
+
+    def set_board(self, board):
+        has_blanks = True if True in [True if "*" in i else False for i in board] else False
+        if has_blanks:
+            words, roots = self.find_words(board)
+            for word, root in zip(words, roots):
+                if "*" in word:
+                    new_word = random.choice(self.words.find(word))
+                    tile = list(root)
+                    for old_letter, new_letter in zip(word, new_word):
+                        if old_letter != new_letter:
+                            print(tile, new_letter, board)
+                            board[tile[0]][tile[1]] = new_letter
+                            print(board)
+                        if tile[2]:
+                            tile[1] += 1
+                        else:
+                            tile[0] += 1
+
+        self.board = board
+
+    def find_illegal_words(self, board):
+        illegal_words = []
+        words, roots = self.find_words(board)
+        for word in words:
+            if len(self.words.find(word)) == 0:
+                illegal_words.append(word)
+        return illegal_words
 
 
 class PlayerHost:
@@ -345,6 +439,42 @@ class PlayerClient:
     def send(self, string):
         # update to actual code
         self.host.receive(string)
+
+
+class BotV1(PlayerClient):
+    """This is the first BOt based on a paper by Andrew W. Appel AND Guy J. Jacobson in May 1988
+    it uses a DAWG structure in it's methodology and finds The highest value next move"""
+    def __init__(self, dictionary=None):
+        super().__init__(self, "Bot")
+        self.update = self.do_turn
+        self.cross_checks = [[["*"] for i in range(15)] for j in range(15)]
+        # creates new english dictionary if none is passed in
+        if dictionary is None:
+            lang = "en"
+            if os.path.exists("Dictionaries/" + lang + ".txt"):
+                file = open("Dictionaries/" + lang + ".txt", "r")
+                words = file.readlines()
+                file.close()
+            for i in range(len(words)):
+                words[i] = words[i].replace("\n", "")
+            self.DAWG = DAWG(words)
+        else:
+            self.DAWG = dictionary
+
+    def do_turn(self, types):
+        move = self.find_move()
+        if not move:
+            pass  # swap tile code
+        else:
+            pass  # normal play code
+        # send move to host
+
+    def find_move(self):
+        # compute cross checks
+        # find anchors
+        # find left side
+        # find right side
+        return False
 
 
 if __name__ == "__main__":

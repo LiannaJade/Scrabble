@@ -120,4 +120,7 @@ def dawg_test(error=None):
 
 
 if __name__ == "__main__":
-    dawg_test()
+    # dawg_test()
+    dawg = scrabble.DAWG(["AAA", "ABA", "AAB"])
+    print(dawg.nodes)
+    print(dawg.find("A**"))

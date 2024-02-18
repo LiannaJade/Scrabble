@@ -291,7 +291,7 @@ class GameCanvas(ttk.Frame):
         host = scrabble.Host(player)
         player.host = host.players[-1]
         # temp code
-        player2 = scrabble.PlayerClient("player2")
+        player2 = scrabble.BotV1(dictionary=host.words)
         host.add_player(player2)
         player2.host = host.players[-1]
         self.player = player
