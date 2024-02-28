@@ -287,9 +287,10 @@ class GameCanvas(ttk.Frame):
     def on_switch(self):
         if not self.controller.app_config["full screen"]:
             self.controller.geometry("640x360")
-        player = scrabble.PlayerClient("player1", update=self.on_update)
+        player = scrabble.BotV1(update=self.on_update)
         host = scrabble.Host(player)
         player.host = host.players[-1]
+        player.dictionary = host.words
         # temp code
         player2 = scrabble.BotV1(dictionary=host.words)
         host.add_player(player2)

@@ -74,6 +74,8 @@ class TilePool:
     def take(self, count):
         # takes tiles from tile pool ///(what if count > tile pool size)
         rtn = []
+        if count > self.count:
+            count = self.count
         for i in range(count):
             num = random.randint(0, len(self.tiles) - 1)
             rtn.append(self.tiles.pop(num))
@@ -171,7 +173,7 @@ class Host(threading.Thread):
         # takes 7 tiles per player
         for player in self.players:
             player.tiles = self.tiles.take(7)
-            player.send("tiles: {0}".format("".join(player.tiles)))  # change to actual command
+            player.send("tiles: {0}; current_player: {1}".format("".join(player.tiles), self.current_player))  # change to actual command
         # start game loop
         self.start()
 
@@ -444,10 +446,14 @@ class PlayerClient:
 class BotV1(PlayerClient):
     """This is the first BOt based on a paper by Andrew W. Appel AND Guy J. Jacobson in May 1988
     it uses a DAWG structure in it's methodology and finds The highest value next move"""
-    def __init__(self, dictionary=None):
+    def __init__(self, dictionary=None, update=None):
         super().__init__(self, "Bot")
         self.update = self.do_turn
-        self.cross_checks = [[["*"] for i in range(15)] for j in range(15)]
+        self.secondary_update = update
+        self.cross_checks = {}
+        self.letters = [chr(i) for i in range(ord("A"), ord("Z") + 1)]
+        self.board = [[" " for x in range(15)] for y in range(15)]
+        self.potential_anchors = set([])
         # creates new english dictionary if none is passed in
         if dictionary is None:
             lang = "en"
@@ -462,19 +468,105 @@ class BotV1(PlayerClient):
             self.DAWG = dictionary
 
     def do_turn(self, types):
-        move = self.find_move()
-        if not move:
-            pass  # swap tile code
-        else:
-            pass  # normal play code
+        if "current_player" in types and self.current_player == self.order:
+            move = self.find_move()
+            print(move, "aaaaaaaaaaaaaaaaaaaaaah")
+            if move is not None:
+                board = "".join(["".join(i) for i in self.board])  # converts board into a string of all the letters
+                rack = "".join(self.tiles)
+                self.send("place: {0}/{1}".format(board, rack))
+            else:
+                pass  # swap tile code
+        if self.secondary_update is not None:
+            self.secondary_update(types)
         # send move to host
 
     def find_move(self):
-        # compute cross checks
-        # find anchors
+        # compute cross checks (change so it only computes places with changes)
+        if self.board is not None:
+            # find anchors
+            self.potential_anchors = set([])
+            for i in range(15):
+                for j in range(15):
+                    if self.board[i][j] == " ":
+                        if i > 0 and self.board[i - 1][j] != " ":
+                            self.potential_anchors.add((j, i))
+                        elif i < 14 and self.board[i + 1][j] != " ":
+                            self.potential_anchors.add((j, i))
+                        elif j > 0 and self.board[i][j - 1] != " ":
+                            self.potential_anchors.add((j, i))
+                        elif j < 14 and self.board[i][j + 1] != " ":
+                            self.potential_anchors.add((j, i))
+            # does cross checks (cross checks only need to happen on potential anchors)
+            self.cross_checks = {}
+            for i in self.potential_anchors:
+                # gets column and row of anchor
+                line_x = list(self.board[i[1]])
+                line_x[i[0]] = "*"
+                line_y = [line[i[0]] for line in self.board]
+                line_y[i[1]] = "*"
+                # removes spaces that don't connect to anchor
+                x = i[0] - 1
+                while x >= 0:
+                    if line_x[x] == " ":
+                        line_x = line_x[x + 1:]
+                        x = -1
+                    else:
+                        x -= 1
+                x = 1
+                while x < len(line_x):
+                    if line_x[x] == " ":
+                        line_x = line_x[:x]
+                        x = 15
+                    else:
+                        x += 1
+                y = i[1] - 1
+                while y >= 0:
+                    if line_y[y] == " ":
+                        line_y = line_y[y + 1:]
+                        y = -1
+                    else:
+                        y -= 1
+                y = 1
+                while y < len(line_y):
+                    if line_y[y] == " ":
+                        line_y = line_y[:y]
+                        y = 15
+                    else:
+                        y += 1
+                # converts list into string with all upper case
+                line_x, line_y = "".join(line_x).upper(), "".join(line_y).upper()
+                # finds the letters that the anchor could be based on the row
+                if line_x != "*":
+                    index = line_x.index("*")
+                    words = self.DAWG.find(line_x)
+                    letters = [word[index].upper() for word in words]
+                    self.cross_checks[i] = set(letters)
+                # finds the letters teh anchor could be based on the column and does the intersection with found letters
+                if line_y != "*":
+                    index = line_y.index("*")
+                    words = self.DAWG.find(line_y)
+                    letters = [word[index].upper() for word in words]
+                    if i in self.cross_checks.keys():
+                        self.cross_checks[i] = self.cross_checks[i].intersection(letters)
+                    else:
+                        self.cross_checks[i] = set(letters)
         # find left side
-        # find right side
-        return False
+
+
+        # temp version
+        if len(self.potential_anchors) == 0:
+            self.board[7][7] = self.tiles[0]
+            self.tiles = self.tiles[1:]
+            return self.find_move()
+        for anchor in self.potential_anchors:
+            playable = self.cross_checks[anchor].intersection(self.tiles)
+            if len(playable) != 0:
+                tile = random.choice(list(playable))
+                self.board[anchor[1]][anchor[0]] = tile
+                self.tiles.remove(tile)
+                return self.board
+        return None
 
 
 if __name__ == "__main__":
