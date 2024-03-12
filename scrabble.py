@@ -57,6 +57,71 @@ class DAWG:
 
             return rtn
 
+    def find_left_side(self, rack, max_len, node=0):
+        if max_len == 0 or len(rack) == 0:
+            return []
+        else:
+            rtn = []
+            if "*" in rack:
+                for letter in self.nodes[node].keys():
+                    new_rack = list(rack)
+                    new_rack.pop(new_rack.index("*"))
+                    l = self.find_left_side(new_rack, max_len - 1, node=self.nodes[node][letter][0])
+                    for i in range(len(l)):
+                        l[i] = letter.lower() + l[i]
+                    rtn += l + [letter.lower()]
+            for letter in set(rack):
+                if letter in self.nodes[node].keys():
+                    new_rack = list(rack)
+                    new_rack.pop(new_rack.index(letter))
+                    l = self.find_left_side(new_rack, max_len - 1, node=self.nodes[node][letter][0])
+                    for i in range(len(l)):
+                        l[i] = letter + l[i]
+                    rtn += l + [letter]
+            return rtn
+
+    def find_right_side(self, word, rack, node=0, right_side=False):
+        # input of word is a list where the left size is individual characters and the right side is either a set or "*"
+        if len(word) > 0 and isinstance(word[0], set):
+            right_side = True
+        if right_side:
+            rtn = []
+            letters = word[0]
+            if letters in ["*", " "]:
+                letters = set([chr(i) for i in range(ord("A"), ord("Z") + 1)])
+            for letter in letters:
+                if letter in rack and letter in self.nodes[node].keys():
+                    new_rack = list(rack)
+                    new_rack.pop(rack.index(letter))
+                    new_node = self.nodes[node][letter][0]
+                    if self.nodes[node][letter][1] and \
+                            (len(word) == 1 or word[1] in ["*", " "] or isinstance(word[1], set)):
+                        rtn += letter
+                    if len(word) > 1:
+                        tmp = self.find_right_side(word[1:], new_rack, new_node, right_side=True)
+                        rtn += [letter + i for i in tmp]
+                if "*" in rack and letter in self.nodes[node].keys():
+                    new_rack = list(rack)
+                    new_rack.pop(rack.index("*"))
+                    new_node = self.nodes[node][letter][0]
+                    if self.nodes[node][letter][1] and \
+                            (len(word) == 1 or word[1] in ["*", " "] or isinstance(word[1], set)):
+                        rtn += letter.lower()
+                    if len(word) > 1:
+                        tmp = self.find_right_side(word[1:], new_rack, new_node, right_side=True)
+                        rtn += [letter.lower() + i for i in tmp]
+
+            return rtn
+        else:
+            rack = list(rack)
+            if word[0].isupper():
+                rack.pop(rack.index(word[0]))
+            else:
+                rack.pop(rack.index("*"))
+            node = self.nodes[node][word[0].upper()][0]
+            rtn = self.find_right_side(word[1:], rack, node=node, right_side=right_side)
+            return [word[0] + i for i in rtn]
+
 
 class TilePool:
     def __init__(self, lang):
@@ -317,7 +382,6 @@ class Host(threading.Thread):
                 if old_roots[index] != root:
                     new_words.append(word)
                     new_roots.append(root)
-        print(new_words, new_roots)
         value = 0
         # gets the score of each word modified
         for word, root in zip(new_words, new_roots):
@@ -409,7 +473,7 @@ class PlayerClient:
     def receive(self, command):
         # update to actual code
         updated = []
-        print(command)
+        print(self, command)
         try:
             commands = command.split("; ")
             for command in commands:
@@ -448,6 +512,7 @@ class BotV1(PlayerClient):
     it uses a DAWG structure in it's methodology and finds The highest value next move"""
     def __init__(self, dictionary=None, update=None):
         super().__init__(self, "Bot")
+        self.host_main = None
         self.update = self.do_turn
         self.secondary_update = update
         self.cross_checks = {}
@@ -469,11 +534,10 @@ class BotV1(PlayerClient):
 
     def do_turn(self, types):
         if "current_player" in types and self.current_player == self.order:
-            move = self.find_move()
-            print(move, "aaaaaaaaaaaaaaaaaaaaaah")
-            if move is not None:
-                board = "".join(["".join(i) for i in self.board])  # converts board into a string of all the letters
-                rack = "".join(self.tiles)
+            move, board, rack = self.find_move()
+            if move:
+                board = "".join(["".join(i) for i in board])  # converts board into a string of all the letters
+                rack = "".join(rack)
                 self.send("place: {0}/{1}".format(board, rack))
             else:
                 pass  # swap tile code
@@ -481,7 +545,7 @@ class BotV1(PlayerClient):
             self.secondary_update(types)
         # send move to host
 
-    def find_move(self):
+    def do_cross_checks(self):
         # compute cross checks (change so it only computes places with changes)
         if self.board is not None:
             # find anchors
@@ -551,32 +615,145 @@ class BotV1(PlayerClient):
                         self.cross_checks[i] = self.cross_checks[i].intersection(letters)
                     else:
                         self.cross_checks[i] = set(letters)
-        # find left side
 
-
-        # temp version
+    def find_move(self):
+        self.do_cross_checks()
         if len(self.potential_anchors) == 0:
-            self.board[7][7] = self.tiles[0]
-            self.tiles = self.tiles[1:]
-            return self.find_move()
-        for anchor in self.potential_anchors:
-            playable = self.cross_checks[anchor].intersection(self.tiles)
-            if len(playable) != 0:
-                tile = random.choice(list(playable))
-                self.board[anchor[1]][anchor[0]] = tile
-                self.tiles.remove(tile)
-                return self.board
-        return None
+            # if there are no potential anchors (the board is empty), then set the centre square as the only anchor
+            self.potential_anchors.add((7, 7))
+            self.cross_checks[(7, 7)] = set([chr(i) for i in range(ord("A"), ord("Z") + 1)])
+            # self.cross_checks[(5, 7)] = set([chr(i) for i in range(ord("A"), ord("Z") + 1)])
+
+        lines = []
+        for i in range(15):
+            # gets each line on the board and adds anchors as sets of their possible letters
+            horizontal = list(self.board[i])
+            vertical = [j[i] for j in self.board]
+            for anchor in self.cross_checks.keys():
+                if anchor[0] == i:
+                    vertical[anchor[1]] = self.cross_checks[anchor]
+                if anchor[1] == i:
+                    horizontal[anchor[0]] = self.cross_checks[anchor]
+            lines += [horizontal, vertical]
+
+        split_words = []  # each word is a tuple where (left_side, right_side, leftmost_anchor, horizontal?)
+
+        for line, index in zip(lines, range(len(lines))):
+            # gets the left part and right part
+            counter = 0  # counter keeps the index in term of the modified line
+            counter_2 = 0  # counter 2 keeps track of line in relation to the original list
+            while counter < len(line):
+                if isinstance(line[counter], set):
+                    # if current place is an anchor add a new word
+                    left_side = line[:counter]
+                    right_side = line[counter:]
+                    line = line[counter+1:]
+                    # finds the anchor for this word
+                    if index % 2 == 0:
+                        anchor = (counter_2, index // 2)
+                    else:
+                        anchor = (index // 2, counter_2)
+                    counter = 0
+                    counter_2 += 1
+                    split_words.append([left_side, right_side, anchor, index % 2 == 0])
+
+                else:
+                    counter += 1
+                    counter_2 += 1
+
+        words = []  # (word, root, horizontal?)
+        for left_side, right_side, anchor, horizontal in split_words:
+            if len(left_side) == 0:
+                # if left_side is empty
+                new_words = self.DAWG.find_right_side(right_side, list(self.tiles))
+                words += [(word, anchor, horizontal) for word in new_words]
+            elif left_side[-1] == " ":
+                # if left_side is all blank
+                left_sides = self.DAWG.find_left_side(list(self.tiles), len(left_side))
+                for left in left_sides:
+                    if horizontal:
+                        root = (anchor[0] - len(left), anchor[1])
+                    else:
+                        root = (anchor[0], anchor[1] - len(left))
+                    new_words = self.DAWG.find_right_side(list(left) + right_side, list(self.tiles))
+                    words += [(word, root, horizontal) for word in new_words]
+            else:
+                # if left_side is all tiles
+                if horizontal:
+                    root = (anchor[0] - len(left_side), anchor[1])
+                else:
+                    root = (anchor[0], anchor[1] - len(left_side))
+                new_rack = list(self.tiles) + ["*" if i.islower() else i for i in left_side]
+                new_words = self.DAWG.find_right_side(left_side + right_side, new_rack)
+                words += [(word, root, horizontal) for word in new_words]
+
+        if len(words) == 0:
+            return False, None, None
+
+        # gets scores
+        for word, index in zip(words, range(len(words))):
+            new_board = [list(line) for line in self.board]
+            new_rack = list(self.tiles)
+            current_square = list(word[1])
+            for letter in word[0]:
+                new_board[current_square[1]][current_square[0]] = letter
+                if word[2]:
+                    current_square[0] += 1
+                else:
+                    current_square[1] += 1
+               # if self.board[current_square[1]][current_square[0]] == " ":
+                #    if letter.isupper():
+                 #       new_rack.pop(new_rack.index(letter))
+                  #  else:
+                   #     new_rack.pop(new_rack.index("*"))
+            score = self.host_main.calculate_score(new_board, new_rack)
+            words[index] = (word[0], word[1], word[2], score)
+
+        words.sort(key=lambda x: x[3], reverse=True)
+
+        chosen_word = words[0]
+
+        new_board = [list(line) for line in self.board]
+        new_rack = list(self.tiles)
+        current_square = list(chosen_word[1])
+        for letter in chosen_word[0]:
+            new_board[current_square[1]][current_square[0]] = letter
+            if self.board[current_square[1]][current_square[0]] == " ":
+                if letter.isupper():
+                    new_rack.pop(new_rack.index(letter))
+                else:
+                    new_rack.pop(new_rack.index("*"))
+            if chosen_word[2]:
+                current_square[0] += 1
+            else:
+                current_square[1] += 1
+
+        # print code
+        for line, index in zip(lines, range(len(lines))):
+            print("line {0}: {1}".format(index, line))
+
+        for word, index in zip(split_words, range(len(split_words))):
+            print("split {0}: {1}".format(index, word))
+
+        for word, index in zip(words, range(len(words))):
+            print("word {0}: {1}".format(index, word))
+
+        print("chosen: {0}".format(chosen_word))
+
+        return True, new_board, new_rack
 
 
 if __name__ == "__main__":
+    """
     player1 = PlayerClient("player 1")
     host = Host(player1)
     player2 = PlayerClient("player 2")
     host.add_player(player2)
     host.start_game()
+"""
 
-    time.sleep(2)
+    bot = BotV1()
+    result = bot.DAWG.find_right_side(["W", "O", set([chr(i) for i in range(ord("A"), ord("Z") + 1)]), " ", " ", " "], ["W", "O", "E", "*", "*"]+[chr(i) for i in range(ord("A"), ord("Z") + 1)])
+    print(result, "\n", "WOE" in result, set([len(i) for i in result]))
 
-    while True:
-        exec(input("->"))
+
