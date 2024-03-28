@@ -1,3 +1,4 @@
+import datetime
 import json
 import random
 import os
@@ -273,9 +274,29 @@ class Host(threading.Thread):
                         for player in self.players:
                             player.send("board: {0}".format("".join(["".join(i) for i in self.board])))
                             player.send("score: {0}/{1}".format(sender.order, sender.score))
+                            player.send("tile_pool: {0}".format(self.tiles.count))
                             player.send("current_player: {0}".format(self.current_player))
                     else:
                         sender.send("error1: oh no")
+                elif command[:6] == "pass: ":
+                    self.current_player = (self.current_player + 1) % self.player_count
+                    for player in self.players:
+                        player.send("board: {0}".format("".join(["".join(i) for i in self.board])))
+                        player.send("score: {0}/{1}".format(sender.order, sender.score))
+                        player.send("tile_pool: {0}".format(self.tiles.count))
+                        player.send("current_player: {0}".format(self.current_player))
+                elif command[:6] == "swap: ":
+                    tiles_to_swap = list(command[6:])
+                    for tile in tiles_to_swap:
+                        sender.tiles.pop(sender.tiles.index(tile))
+                    new_tiles = self.tiles.swap(tiles_to_swap)
+                    sender.tiles += new_tiles
+                    sender.send("tiles: {0}".format("".join(sender.tiles)))
+                    for player in self.players:
+                        player.send("board: {0}".format("".join(["".join(i) for i in self.board])))
+                        player.send("score: {0}/{1}".format(sender.order, sender.score))
+                        player.send("tile_pool: {0}".format(self.tiles.count))
+                        player.send("current_player: {0}".format(self.current_player))
 
                 print("completed {0}".format(command))
             time.sleep(1)
@@ -467,6 +488,7 @@ class PlayerClient:
         self.current_player = 0
         self.update = update
         self.scores = [0] * 4
+        self.tile_pool = 0
 
         self.host = None  # temp variable until implementation
 
@@ -496,6 +518,8 @@ class PlayerClient:
                     self.player_count = int(operand)
                 elif opcode == "current_player":
                     self.current_player = int(operand)
+                elif opcode == "tile_pool":
+                    self.tile_pool = int(operand)
                 updated.append(opcode)
         except:
             raise
@@ -519,6 +543,8 @@ class BotV1(PlayerClient):
         self.letters = [chr(i) for i in range(ord("A"), ord("Z") + 1)]
         self.board = [[" " for x in range(15)] for y in range(15)]
         self.potential_anchors = set([])
+        self.moves = 0
+        self.file_name = None
         # creates new english dictionary if none is passed in
         if dictionary is None:
             lang = "en"
@@ -540,7 +566,13 @@ class BotV1(PlayerClient):
                 rack = "".join(rack)
                 self.send("place: {0}/{1}".format(board, rack))
             else:
-                pass  # swap tile code
+                if self.tile_pool > 0:
+                    rack = "".join(self.tiles[:min(len(self.tiles), self.tile_pool) - 1])
+                    self.send("swap: {0}".format(rack))
+                else:
+                    self.send("pass: ")
+        if "order" in types and self.file_name is None:
+            self.file_name = "logs/{0}-{1}.txt".format(datetime.datetime.now().strftime("%d-%m-%Y-%H-%M-%S"), self.order)
         if self.secondary_update is not None:
             self.secondary_update(types)
         # send move to host
@@ -617,6 +649,7 @@ class BotV1(PlayerClient):
                         self.cross_checks[i] = set(letters)
 
     def find_move(self):
+        t0 = time.time()
         self.do_cross_checks()
         if len(self.potential_anchors) == 0:
             # if there are no potential anchors (the board is empty), then set the centre square as the only anchor
@@ -687,6 +720,7 @@ class BotV1(PlayerClient):
                 new_words = self.DAWG.find_right_side(left_side + right_side, new_rack)
                 words += [(word, root, horizontal) for word in new_words]
 
+        # exception for when no words are found
         if len(words) == 0:
             return False, None, None
 
@@ -701,18 +735,14 @@ class BotV1(PlayerClient):
                     current_square[0] += 1
                 else:
                     current_square[1] += 1
-               # if self.board[current_square[1]][current_square[0]] == " ":
-                #    if letter.isupper():
-                 #       new_rack.pop(new_rack.index(letter))
-                  #  else:
-                   #     new_rack.pop(new_rack.index("*"))
             score = self.host_main.calculate_score(new_board, new_rack)
             words[index] = (word[0], word[1], word[2], score)
 
+        # word selection (chooses the highest scoring word)
         words.sort(key=lambda x: x[3], reverse=True)
-
         chosen_word = words[0]
 
+        # places chosen word on the board
         new_board = [list(line) for line in self.board]
         new_rack = list(self.tiles)
         current_square = list(chosen_word[1])
@@ -728,22 +758,23 @@ class BotV1(PlayerClient):
             else:
                 current_square[1] += 1
 
-        # print code
-        for line, index in zip(lines, range(len(lines))):
-            print("line {0}: {1}".format(index, line))
+        t1 = time.time()
+        # logging code
+        if self.file_name is not None:
+            log_file = open(self.file_name, "a")
+            log_file.write("------------/ Move {0} \--------------\n".format(self.moves + 1))
+            log_file.write("chosen move: {0}\nscore: {1}\n".format(chosen_word[0], chosen_word[3]))
+            log_file.write("time taken: {0}s\n".format(t1-t0))
+            log_file.write("".join(["".join(i) + "\n" for i in new_board]))
+            log_file.close()
 
-        for word, index in zip(split_words, range(len(split_words))):
-            print("split {0}: {1}".format(index, word))
-
-        for word, index in zip(words, range(len(words))):
-            print("word {0}: {1}".format(index, word))
-
-        print("chosen: {0}".format(chosen_word))
+        self.moves += 1
 
         return True, new_board, new_rack
 
 
 if __name__ == "__main__":
+    pass
     """
     player1 = PlayerClient("player 1")
     host = Host(player1)
@@ -751,9 +782,3 @@ if __name__ == "__main__":
     host.add_player(player2)
     host.start_game()
 """
-
-    bot = BotV1()
-    result = bot.DAWG.find_right_side(["W", "O", set([chr(i) for i in range(ord("A"), ord("Z") + 1)]), " ", " ", " "], ["W", "O", "E", "*", "*"]+[chr(i) for i in range(ord("A"), ord("Z") + 1)])
-    print(result, "\n", "WOE" in result, set([len(i) for i in result]))
-
-
