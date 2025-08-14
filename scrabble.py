@@ -180,6 +180,7 @@ class TilePool:
 class Host(threading.Thread):
     def __init__(self, host_player, lang="en"):
         super().__init__()
+        self.playing = False
         self.inputs = []
         self._game_started = False
         self.players = []
@@ -187,6 +188,7 @@ class Host(threading.Thread):
         self.player_count = None
         self.board = [[" " for j in range(15)] for i in range(15)]
         self.current_player = 0
+        self.skip_counter = 0
         self.bonus_tiles = {"DW": [(1, 1), (2, 2), (3, 3), (4, 4),
                                    (13, 1), (12, 2), (11, 3), (10, 4),
                                    (1, 13), (2, 12), (3, 11), (4, 10),
@@ -239,7 +241,10 @@ class Host(threading.Thread):
         # takes 7 tiles per player
         for player in self.players:
             player.tiles = self.tiles.take(7)
-            player.send("tiles: {0}; current_player: {1}".format("".join(player.tiles), self.current_player))  # change to actual command
+            player.send("tiles: {0}; current_player: {1}".format("".join(player.tiles), self.current_player,))
+
+        for player in self.players:
+            player.send("tile_pool: {0}".format(self.tiles.count))
         # start game loop
         self.start()
 
@@ -248,11 +253,13 @@ class Host(threading.Thread):
 
     def game_loop(self):
         # waiting for response from player
-        playing = True
-        while playing:
+        self.playing = True
+        while self.playing:
             if len(self.inputs) > 0:
                 command = self.inputs.pop(0)
                 sender, command = command
+                if sender.order != self.current_player:
+                    continue
                 if command[:7] == "place: ":
                     # splits incoming command
                     board, rack = command[7:].split("/")
@@ -262,9 +269,10 @@ class Host(threading.Thread):
 
                     # plays turn if valid
                     if self.is_valid_move(board):
+                        self.skip_counter = 0
                         illegal_words = self.find_illegal_words(board)
                         if len(illegal_words) != 0:
-                            sender.send("error1: illegal word")
+                            sender.send("error2: {0}".format(illegal_words[0]))
                             continue
                         sender.score += self.calculate_score(board, rack)
                         sender.tiles = list(rack) + self.tiles.take(7 - len(rack))
@@ -279,6 +287,7 @@ class Host(threading.Thread):
                     else:
                         sender.send("error1: oh no")
                 elif command[:6] == "pass: ":
+                    self.skip_counter += 1
                     self.current_player = (self.current_player + 1) % self.player_count
                     for player in self.players:
                         player.send("board: {0}".format("".join(["".join(i) for i in self.board])))
@@ -286,6 +295,8 @@ class Host(threading.Thread):
                         player.send("tile_pool: {0}".format(self.tiles.count))
                         player.send("current_player: {0}".format(self.current_player))
                 elif command[:6] == "swap: ":
+                    self.skip_counter = 0
+                    self.current_player = (self.current_player + 1) % self.player_count
                     tiles_to_swap = list(command[6:])
                     for tile in tiles_to_swap:
                         sender.tiles.pop(sender.tiles.index(tile))
@@ -299,7 +310,28 @@ class Host(threading.Thread):
                         player.send("current_player: {0}".format(self.current_player))
 
                 print("completed {0}".format(command))
-            time.sleep(1)
+                # end game when tile pool is empty and one player's rack is also empty
+                if self.tiles.count == 0 and 0 in [len(i.tiles) for i in self.players]:
+                    self.playing = False
+                # end game when each player skips twice
+                if self.skip_counter >= self.player_count * 2:
+                    self.playing = False
+        # after game
+        winner, winning_score = None, 0
+        for player in self.players:
+            # removes value of remaining tiles from score
+            if len(player.tiles) > 0:
+                for tile in player.tiles:
+                    player.score -= self.tiles.get_value(tile)
+            # checks for winner
+            if player.score > winning_score:
+                winner = player.order
+                winning_score = player.score
+        # send end game stats
+        for player in self.players:
+            for i in self.players:
+                player.send("score: {0}/{1}".format(i.order, i.score))
+            player.send("winner: {0}".format(winner))
 
     @staticmethod
     def find_words(board):
@@ -390,7 +422,6 @@ class Host(threading.Thread):
         return False
 
     def calculate_score(self, board, rack):
-        # needs finishing
         words, roots = self.find_words(board)
         old_words, old_roots = self.find_words(self.board)
         new_words, new_roots = [], []
@@ -426,8 +457,13 @@ class Host(threading.Thread):
                     elif tile in self.bonus_tiles["TL"]:
                         bonus_letters += word[i] * 2
             value += self.tiles.get_value(word + bonus_letters) * multiplier
-            # 50 point bonus for using all available tiles
-            if len(rack) == 0:
+            # 50 point bonus for using 7 tiles
+            new_tiles = 0
+            for i in range(15):
+                for j in range(15):
+                    if self.board[i][j] == " " and board[i][j] != " ":
+                        new_tiles += 1
+            if new_tiles == 7:
                 value += 50
         return value
 
@@ -480,22 +516,23 @@ class PlayerHost:
 
 class PlayerClient:
     def __init__(self, name, update=lambda types: None):
-        self.name = name
+        # game variables
         self.order = None
         self.board = None
         self.tiles = None
         self.player_count = None
         self.current_player = 0
-        self.update = update
         self.scores = [0] * 4
         self.tile_pool = 0
 
-        self.host = None  # temp variable until implementation
+        # misc variables
+        self.host = None
+        self.update = update
+        self.name = name
 
     def receive(self, command):
         # update to actual code
         updated = []
-        print(self, command)
         try:
             commands = command.split("; ")
             for command in commands:
@@ -513,14 +550,13 @@ class PlayerClient:
                     print("scores now {0}".format(self.scores))
                 elif opcode == "board":
                     self.board = [[operand[j * 15 + i] for i in range(15)] for j in range(15)]
-                    updated.append("board")
                 elif opcode == "player_count":
                     self.player_count = int(operand)
                 elif opcode == "current_player":
                     self.current_player = int(operand)
                 elif opcode == "tile_pool":
                     self.tile_pool = int(operand)
-                updated.append(opcode)
+                updated.append([opcode, operand])
         except:
             raise
         if self.update is not None:
@@ -559,6 +595,8 @@ class BotV1(PlayerClient):
             self.DAWG = dictionary
 
     def do_turn(self, types):
+        passthrough = types
+        types = [i[0] for i in types]
         if "current_player" in types and self.current_player == self.order:
             move, board, rack = self.find_move()
             if move:
@@ -571,11 +609,11 @@ class BotV1(PlayerClient):
                     self.send("swap: {0}".format(rack))
                 else:
                     self.send("pass: ")
+        # sets log file name when game begins
         if "order" in types and self.file_name is None:
             self.file_name = "logs/{0}-{1}.txt".format(datetime.datetime.now().strftime("%d-%m-%Y-%H-%M-%S"), self.order)
         if self.secondary_update is not None:
-            self.secondary_update(types)
-        # send move to host
+            self.secondary_update(passthrough)
 
     def do_cross_checks(self):
         # compute cross checks (change so it only computes places with changes)

@@ -47,6 +47,8 @@ class App(tk.Tk):
                 self.assets[image.name[:-4]] = tk.PhotoImage(file=image.path)
 
     def set_full_screen(self, state):
+        if state is None:
+            state = self.app_config["full screen"]
         if state:
             self.overrideredirect(True)
             self.geometry("{0}x{1}+0+0".format(self.winfo_screenwidth(), self.winfo_screenheight()))
@@ -54,7 +56,6 @@ class App(tk.Tk):
             self.overrideredirect(False)
             self.geometry("360x420+{0}+{1}".format(int(self.winfo_screenwidth() / 2 - 180),
                                                    int(self.winfo_screenheight() / 2 - 210)))
-        print("set full screen to {0}".format(state))
 
     @staticmethod
     def create_theme():
@@ -123,15 +124,23 @@ class GameSetupPage(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        setup_label = ttk.Label(self, text="Game Setup",
-                                style="title.TLabel")
+        self.observer_mode = tk.IntVar()
+        setup_label = ttk.Label(self, text="Game Setup", style="title.TLabel")
         setup_label.grid(row=0, column=1, columnspan=2)
-        back_to_menu_button = ttk.Button(self, text="Back to Menu",
+        observer_tick_box = ttk.Checkbutton(self, text="Observer Mode", variable=self.observer_mode)
+        observer_tick_box.grid(row=1, column=1, columnspan=2)
+        ai_count_label = ttk.Label(self, text="Number of AI:")
+        ai_count_label.grid(row=2, column=1, sticky="E")
+        ai_count_entry = ttk.Spinbox(self, from_=0, to=3, width=10)
+        ai_count_entry.set(1)
+        ai_count_entry.grid(row=2, column=2, sticky="W")
+        self.ai_count = ai_count_entry
+        back_to_menu_button = ttk.Button(self, text="Back   to Menu",
                                          command=lambda: controller.set_frame(MainMenu))
-        back_to_menu_button.grid(row=1, column=1)
+        back_to_menu_button.grid(row=10, column=1)
         start_game_button = ttk.Button(self, text="Start Game",
                                        command=self.start_game)
-        start_game_button.grid(row=1, column=2)
+        start_game_button.grid(row=10, column=2)
 
     def start_game(self):
         self.controller.start_game()
@@ -156,6 +165,12 @@ class GameCanvas(ttk.Frame):
         self.canvas.create_image(320, 360, anchor="s", image=self.controller.assets["rack"], tag="rack")
         self.canvas.create_text(20, 300, anchor="w", text="End Turn", tags=["button", "end_turn"])
         self.canvas.create_text(170, 320, anchor="w", tag="error_line", font=("Helvetica", 20, "bold"))
+        self.canvas.create_text(20, 20, anchor="w", tag="tile_pool")
+        self.canvas.create_rectangle(20, 40, 100, 120, tag="tile_bag")
+        self.canvas.create_text(20, 130, anchor="w", text="Swap Tiles", tags=["button", "swap_tiles"])
+        self.canvas.create_text(480, 20, anchor="w", tags=["button", "exit_game"], font=("Helvetica", 16, "bold"),
+                                text="Exit to Menu")
+        self.canvas.create_text(20, 320, anchor="w", text="Pass", tags=["button", "pass"])
 
     def set_tiles(self, tiles):
         # removes tiles currently in the rack
@@ -207,6 +222,11 @@ class GameCanvas(ttk.Frame):
         error_line = self.canvas.find_withtag("error_line")
         for i in error_line:
             self.canvas.itemconfigure(i, text=error)
+
+    def set_tile_pool(self):
+        tile_pool = self.canvas.find_withtag("tile_pool")
+        for i in tile_pool:
+            self.canvas.itemconfigure(i, text="tile pool {0}".format(self.player.tile_pool))
 
     def create_player_list(self):
         for i in range(self.player.player_count):
@@ -287,36 +307,53 @@ class GameCanvas(ttk.Frame):
     def on_switch(self):
         if not self.controller.app_config["full screen"]:
             self.controller.geometry("640x360")
-        player = scrabble.BotV1(update=self.on_update)
-        host = scrabble.Host(player)
-        player.host = host.players[-1]
-        player.dictionary = host.words
-        # temp code
-        player2 = scrabble.BotV1(dictionary=host.words)
-        host.add_player(player2)
-        player2.host = host.players[-1]
-        player.host_main = host
-        player2.host_main = host
-        self.player = player
-        host.start_game()
+        if self.controller.frames[GameSetupPage].observer_mode.get() == 0:
+            # if not observer mode
+            self.player = scrabble.PlayerClient("host", update=self.on_update)
+            host = scrabble.Host(self.player)
+            self.player.host = host.players[-1]
+            self.player.host_main = host
+            for i in range(int(self.controller.frames[GameSetupPage].ai_count.get())):
+                player = scrabble.BotV1(dictionary=host.words)
+                host.add_player(player)
+                player.host = host.players[-1]
+                player.host_main = host
+            host.start_game()
+        else:
+            # if observer mode
+            self.player = scrabble.BotV1(update=self.on_update)
+            host = scrabble.Host(self.player)
+            self.player.host = host.players[-1]
+            self.player.host_main = host
+            for i in range(int(self.controller.frames[GameSetupPage].ai_count.get())):
+                player = scrabble.BotV1(dictionary=host.words)
+                host.add_player(player)
+                player.host = host.players[-1]
+                player.host_main = host
+            host.start_game()
 
     def on_update(self, types):
-        print(types)
-        if "tiles" in types:
-            if self.player.tiles is not None:
+        for opcode, operand in types:
+            if opcode == "tiles" and self.player.tiles is not None:
                 self.set_tiles(self.player.tiles)
-        if "board" in types:
-            if self.player.board is not None:
+            elif opcode == "board" and self.player.board is not None:
                 self.set_board()
-        for i in ["current_player", "score"]:
-            if i in types:
+            elif opcode == "player_count":
+                self.create_player_list()
+            elif opcode == "tile_pool":
+                self.set_tile_pool()
+            elif opcode in ["current_player", "score"]:
                 self.update_player_list()
                 self.set_error_line()
-                break
-        if "player_count" in types:
-            self.create_player_list()
-        if "error1" in types:
-            self.set_error_line(error="Invalid Tile Placement")
+            elif opcode == "error1":
+                self.set_error_line(error="Invalid Tile Placement")
+            elif opcode == "error2":
+                self.set_error_line(error="Invalid Word \"{0}\"".format(operand.capitalize()))
+            elif opcode == "winner":
+                if operand.isnumeric() and int(operand) == self.player.order:
+                    self.set_error_line(error="You Won")
+                else:
+                    self.set_error_line(error="Winner Player{0}".format(operand))
 
     def on_left_click(self, event):
         # if there is a tile where clicked, then give tile move tag
@@ -329,37 +366,71 @@ class GameCanvas(ttk.Frame):
             elif "button" in self.canvas.gettags(i):
                 if "end_turn" in self.canvas.gettags(i):
                     self.complete_turn()
+                elif "pass" in self.canvas.gettags(i):
+                    self.player.send("pass: ")
+                    self.set_board()
+                    self.set_tiles(self.player.tiles)
+                elif "swap_tiles" in self.canvas.gettags(i):
+                    ids = list(self.canvas.find_withtag("swap"))  # finds the ids of all tiles on the swap pad
+                    if len(ids) == 0:
+                        self.set_error_line("No tiles selected to swap")
+                    else:
+                        tiles = []
+                        # gets all the tile text items
+                        for item in ids:
+                            if "tile_text" in self.canvas.gettags(item):
+                                tiles.append(item)
+                        # finds text on tile, tiles is now a list of letters
+                        for tile, index in zip(tiles, range(len(tiles))):
+                            tiles[index] = self.canvas.itemcget(tile, "text")
+                        # deletes tiles
+                        for item in ids:
+                            self.canvas.delete(item)
+                        # sends command to server
+                        self.player.send("swap: {0}".format("".join(tiles)))
+                elif "exit_game" in self.canvas.gettags(i):
+                    # exits to main menu and deletes self from pages
+                    self.player.host_main.playing = False
+                    self.controller.set_frame(MainMenu)
+                    self.controller.frames.pop(GameCanvas)
+                    self.controller.set_full_screen(None)
         self.canvas.tag_raise("move")
 
     def on_left_release(self, event):
         bbox = self.canvas.bbox("move")
         # if bbox is not none than there is a tile currently being moved
         if bbox is not None:
-            # finds the nearest anchor point
+            # gets the centre of the held tile
             x, y = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
-            anchor = self.find_anchor(x, y)
-            # if the anchor point is empty, tile assign that place, removes all tags that aren't "tile"
-            if len(self.canvas.find_withtag(anchor)) == 0 and anchor != (None, None):
-                self.canvas.addtag_withtag(anchor, "move")
-                for tag in self.canvas.gettags("move"):
-                    if tag not in ["current", "move", "tile", str(anchor[0]) + " " + str(anchor[1])] and tag[
-                                                                                                         :5] != "text_":
-                        self.canvas.dtag(anchor, tag)
-            anchor = self.canvas.gettags("move")
-            for i in anchor:
-                if i not in ["tile", "move", "current"] and i[:5] != "text_":
-                    anchor = i.split(" ")
-                    anchor = int(anchor[0]), int(anchor[1]) if anchor[1].isnumeric() else anchor[1]
-            # now that the anchor to move the tile to is found, is then move
-            if anchor[1] == "R":
-                bbox = self.canvas.bbox("rack")
-                x, y = bbox[0] + 5 + anchor[0] * 20, bbox[1]
+            # if the held tile is over tile tile bag, it is dropped without moving it
+            tile_bag_pos = self.canvas.bbox(self.canvas.find_withtag("tile_bag")[0])
+            if tile_bag_pos[0] < x < tile_bag_pos[2] and tile_bag_pos[1] < y < tile_bag_pos[3]:
+                self.canvas.addtag_withtag("swap", "move")
+                self.canvas.dtag("move", "move")
             else:
-                bbox = self.canvas.bbox("board")
-                x = bbox[0] + anchor[0] * (bbox[2] - bbox[0]) / 15
-                y = bbox[1] + anchor[1] * (bbox[3] - bbox[1]) / 15
-            self.canvas.moveto("move", x, y)
-            self.canvas.dtag("move", "move")
+                # finds the nearest anchor point on board or rack to tile position
+                anchor = self.find_anchor(x, y)
+                # if the anchor point is empty, tile assign that place, removes all tags that aren't "tile"
+                if len(self.canvas.find_withtag(anchor)) == 0 and anchor != (None, None):
+                    self.canvas.addtag_withtag(anchor, "move")
+                    for tag in self.canvas.gettags("move"):
+                        if tag not in ["current", "move", "tile", str(anchor[0]) + " " + str(anchor[1])] and tag[:5] != "text_":
+                            self.canvas.dtag(anchor, tag)
+                anchor = self.canvas.gettags("move")
+                for i in anchor:
+                    if i not in ["tile", "move", "current", "swap"] and i[:5] != "text_":
+                        anchor = i.split(" ")
+                        anchor = int(anchor[0]), int(anchor[1]) if anchor[1].isnumeric() else anchor[1]
+                # now that the anchor to move the tile to is found, is then move
+                if anchor[1] == "R":
+                    bbox = self.canvas.bbox("rack")
+                    x, y = bbox[0] + 5 + anchor[0] * 20, bbox[1]
+                else:
+                    bbox = self.canvas.bbox("board")
+                    x = bbox[0] + anchor[0] * (bbox[2] - bbox[0]) / 15
+                    y = bbox[1] + anchor[1] * (bbox[3] - bbox[1]) / 15
+                self.canvas.moveto("move", x, y)
+                self.canvas.dtag("move", "move")
 
     def on_mouse_motion(self, event):
         x, y = event.x - 10, event.y - 10
